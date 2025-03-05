@@ -129,6 +129,201 @@ converter.on('end', (result) => {
 converter.start();
 ```
 
+## Advanced Codec Support
+
+### AV1 Encoding with rav1e
+
+Muxy supports AV1 encoding using [rav1e](https://github.com/xiph/rav1e), a fast and safe AV1 encoder written in Rust. This provides an efficient alternative to libaom-av1 for AV1 encoding.
+
+#### Prerequisites
+
+To use rav1e with Muxy, you need:
+
+1. FFmpeg compiled with librav1e support
+2. rav1e installed on your system
+
+#### Installation
+
+**macOS:**
+```bash
+brew install rav1e
+brew install ffmpeg --with-librav1e
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+sudo apt-get install rav1e
+sudo apt-get install ffmpeg
+```
+
+**From Source:**
+Follow the [rav1e installation instructions](https://github.com/xiph/rav1e#installing).
+
+#### Usage
+
+```typescript
+import muxy from '@aikonlabs/muxy';
+
+// Event-based API
+const converter = muxy.createVideoConverter('input.mp4', 'output.mp4', {
+  codec: 'librav1e',      // Use rav1e encoder
+  format: 'mp4',          // Output format
+  pixFmt: 'yuv420p',      // Pixel format
+  // rav1e specific options
+  speed: 6,               // Encoding speed (0-10, higher is faster)
+  tileColumns: 2,         // Number of tile columns
+  tileRows: 2,            // Number of tile rows
+  bitrate: '2M',          // Target bitrate
+  keyframeInterval: 240   // Keyframe interval
+});
+
+converter.on('progress', (progress) => {
+  console.log(`Progress: ${progress.percent}%`);
+});
+
+converter.on('complete', (result) => {
+  console.log('Conversion complete!', result);
+});
+
+await converter.start();
+
+// Promise-based API
+const result = await muxy.convertVideo('input.mp4', 'output.mp4', {
+  codec: 'librav1e',
+  format: 'mp4',
+  pixFmt: 'yuv420p',
+  speed: 6,
+  tileColumns: 2,
+  tileRows: 2,
+  bitrate: '2M',
+  keyframeInterval: 240
+});
+```
+
+#### rav1e-specific Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `speed` | Encoding speed (0-10, higher is faster) | 6 |
+| `tileColumns` | Number of tile columns | 1 |
+| `tileRows` | Number of tile rows | 1 |
+| `threads` | Number of threads to use for encoding | CPU core count |
+| `keyframeInterval` | Keyframe interval | 240 |
+
+#### Multi-threading with rav1e
+
+By default, rav1e may only use a single CPU core when encoding through FFmpeg. Muxy automatically enables multi-threading by:
+
+1. Setting the `threads` parameter to use all available CPU cores
+2. Enabling row multi-threading with `-row-mt 1`
+3. Using tile-based parallelism with `tileColumns` and `tileRows`
+
+To optimize performance for your specific hardware:
+
+```typescript
+import os from 'os';
+
+// Get available CPU cores
+const cpuCount = os.cpus().length;
+
+const converter = muxy.createVideoConverter('input.mp4', 'output.mp4', {
+  codec: 'librav1e',
+  // Use all available CPU cores
+  threads: cpuCount,
+  // Optimize tile configuration based on resolution
+  // For 1080p, 2x2 tiles work well
+  tileColumns: 2,
+  tileRows: 2
+});
+```
+
+For very high-resolution content (4K+), consider increasing the tile configuration:
+
+```typescript
+const converter = muxy.createVideoConverter('input.mp4', 'output.mp4', {
+  codec: 'librav1e',
+  threads: cpuCount,
+  // For 4K content, more tiles can help
+  tileColumns: 4,
+  tileRows: 4
+});
+```
+
+#### Benchmarking AV1 Encoding Performance
+
+Muxy includes a benchmarking tool to compare single-threaded vs multi-threaded AV1 encoding performance. This helps you understand the performance gains from multi-threading on your specific hardware.
+
+To run the benchmark:
+
+```bash
+# Run the AV1 benchmark
+pnpm benchmark:av1
+```
+
+The benchmark will:
+1. Encode a short video clip using single-threaded mode
+2. Encode the same clip using all available CPU cores
+3. Compare encoding times, speedup factor, and file sizes
+4. Report efficiency as a percentage of perfect linear scaling
+
+Sample benchmark output:
+```
+=== System Information ===
+CPU Cores: 8
+Architecture: x64
+Platform: darwin
+Node.js: v20.10.0
+Total Memory: 16 GB
+Free Memory: 4 GB
+
+=== Single-Threaded AV1 Encoding Benchmark ===
+Output: /path/to/benchmark/single-threaded.mp4
+Progress: 10% (12 fps) - Elapsed: 10.5s
+...
+✅ Single-threaded encoding complete in 120.45 seconds
+File size: 2.34 MB
+
+=== Multi-Threaded AV1 Encoding Benchmark ===
+Output: /path/to/benchmark/multi-threaded.mp4
+Using 8 CPU cores
+Progress: 10% (78 fps) - Elapsed: 1.8s
+...
+✅ Multi-threaded encoding complete in 18.72 seconds
+File size: 2.38 MB
+
+=== Benchmark Results ===
+Single-threaded encoding time: 120.45 seconds
+Multi-threaded encoding time: 18.72 seconds
+Speedup factor: 6.43x
+Efficiency: 80.4% of perfect linear scaling
+
+File size comparison:
+Single-threaded: 2.34 MB
+Multi-threaded: 2.38 MB
+Size difference: 1.71%
+```
+
+#### Verifying FFmpeg and rav1e Support
+
+To check if your FFmpeg installation is properly configured with librav1e support and multi-threading capabilities:
+
+```bash
+# Check FFmpeg and rav1e compatibility
+pnpm test:ffmpeg-rav1e
+```
+
+This will verify:
+- If FFmpeg is installed
+- If rav1e is installed
+- If FFmpeg is compiled with librav1e support
+- Available AV1 encoders
+- Multi-threading support
+- System resources for encoding
+
+#### Example
+
+See the [av1.ts](./example/av1.ts) example for a complete demonstration of AV1 encoding with rav1e using multi-threading.
+
 ## 📋 API Reference
 
 ### muxy.convertVideo(inputFile, outputFile, options)
@@ -279,7 +474,7 @@ devpod task run-example
 
 ### Using Dev Containers
 
-This project includes a development container configuration that provides a consistent development environment with all required dependencies pre-installed, including ffmpeg.
+This project includes a development container configuration that provides a consistent development environment with all required dependencies pre-installed, including ffmpeg with librav1e support.
 
 #### Prerequisites
 
@@ -293,11 +488,12 @@ This project includes a development container configuration that provides a cons
 2. Open the project in VS Code
 3. When prompted, click "Reopen in Container" or run the "Remote-Containers: Reopen in Container" command from the command palette
 4. VS Code will build the container and open the project inside it
-5. All dependencies, including ffmpeg, will be automatically installed
+5. All dependencies, including ffmpeg with librav1e support, will be automatically installed
 
 The development container includes:
 - Node.js 20
-- ffmpeg (latest version)
+- FFmpeg compiled from source with librav1e support
+- rav1e installed from source
 - pnpm package manager
 - Git and other development tools
 
@@ -309,14 +505,14 @@ Once inside the container, you can run the examples:
 # Build the project
 pnpm build
 
-# Test if ffmpeg is correctly installed
-pnpm test:ffmpeg
+# Test if ffmpeg is correctly installed with rav1e support
+pnpm test:ffmpeg-rav1e
 
-# Create a test video file for examples
-pnpm container:test
+# Run the AV1 example
+pnpm example:av1
 
-# Run the example
-pnpm example
+# Run the AV1 benchmark
+pnpm benchmark:av1
 ```
 
 ## License

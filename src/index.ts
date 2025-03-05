@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { EventEmitter } from 'events';
 
 // Types
@@ -12,6 +13,12 @@ interface ConversionOptions {
   height?: number;
   bitrate?: string;
   quality?: number;
+  // AV1 specific options
+  speed?: number;        // Encoding speed (0-10, higher is faster)
+  tileColumns?: number;  // Number of tile columns
+  tileRows?: number;     // Number of tile rows
+  keyframeInterval?: number; // Keyframe interval
+  threads?: number;      // Number of threads to use for encoding
   [key: string]: any;
 }
 
@@ -45,93 +52,50 @@ class Converter extends EventEmitter {
 
   // Start the conversion process
   start(): Promise<ConversionResult> {
-    // Check if input file exists
-    if (!existsSync(this.inputFile)) {
-      const error = new Error(`Input file does not exist: ${this.inputFile}`);
-      this.emit('error', error);
-      return Promise.reject(error);
-    }
-
-    // Check if ffmpeg is installed
-    if (!checkFfmpegInstalled()) {
-      const error = new Error('ffmpeg is not installed or not in PATH');
-      this.emit('error', error);
-      return Promise.reject(error);
-    }
-
     return new Promise((resolve, reject) => {
-      const startTime = Date.now();
+      // Check if input file exists
+      if (!existsSync(this.inputFile)) {
+        const error = new Error(`Input file does not exist: ${this.inputFile}`);
+        this.emit('error', error);
+        reject(error);
+        return;
+      }
+
+      // Prepare FFmpeg arguments
+      const args = this.buildFfmpegArgs();
+
+      // Spawn FFmpeg process
+      const ffmpeg = spawn('ffmpeg', args);
       let duration = 0;
 
-      // Build ffmpeg arguments
-      const args = ['-i', this.inputFile];
+      ffmpeg.stderr.on('data', (data) => {
+        const output = data.toString();
+        
+        // Extract duration information
+        if (duration === 0) {
+          const durationMatch = output.match(/Duration: (\d{2}):(\d{2}):(\d{2})/);
+          if (durationMatch) {
+            const hours = parseInt(durationMatch[1]);
+            const minutes = parseInt(durationMatch[2]);
+            const seconds = parseInt(durationMatch[3]);
+            duration = hours * 3600 + minutes * 60 + seconds;
+          }
+        }
 
-      // Add options
-      if (this.options.codec) {
-        args.push('-c:v', this.options.codec);
-      }
-
-      if (this.options.preset) {
-        args.push('-preset', this.options.preset);
-      }
-
-      if (this.options.width && this.options.height) {
-        args.push('-s', `${this.options.width}x${this.options.height}`);
-      }
-
-      if (this.options.bitrate) {
-        args.push('-b:v', this.options.bitrate);
-      }
-
-      if (this.options.quality) {
-        args.push('-q:v', this.options.quality.toString());
-      }
-
-      // Add output format if specified
-      if (this.options.format) {
-        args.push('-f', this.options.format);
-      }
-
-      // Add progress output
-      args.push('-progress', 'pipe:1');
-
-      // Add output file
-      args.push(this.outputFile);
-
-      // Spawn ffmpeg process
-      const ffmpeg = spawn('ffmpeg', args);
-      
-      // Get video duration first
-      const ffprobe = spawn('ffprobe', [
-        '-v', 'error',
-        '-show_entries', 'format=duration',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        this.inputFile
-      ]);
-
-      ffprobe.stdout.on('data', (data) => {
-        duration = parseFloat(data.toString());
-      });
-
-      // Handle progress
-      ffmpeg.stdout.on('data', (data) => {
-        if (duration > 0) {
-          const progress = parseProgress(data.toString());
-          const timeInSeconds = progress.time.split(':').reduce((acc, time, index) => {
-            if (index === 0) return acc + parseInt(time) * 3600;
-            if (index === 1) return acc + parseInt(time) * 60;
-            return acc + parseFloat(time);
-          }, 0);
-          
-          progress.percent = Math.min(Math.round((timeInSeconds / duration) * 100), 100);
+        // Parse progress information
+        if (output.includes('time=')) {
+          const progress = this.parseProgress(output);
+          if (duration > 0) {
+            // Calculate percent based on time
+            const timeComponents = progress.time.split(':');
+            const timeSeconds = 
+              parseInt(timeComponents[0]) * 3600 + 
+              parseInt(timeComponents[1]) * 60 + 
+              parseFloat(timeComponents[2]);
+            progress.percent = (timeSeconds / duration) * 100;
+          }
           this.emit('progress', progress);
         }
-      });
-
-      // Handle errors
-      ffmpeg.stderr.on('data', (data) => {
-        // ffmpeg outputs progress info to stderr, so we don't treat this as an error
-        // console.error(`stderr: ${data}`);
       });
 
       ffmpeg.on('error', (error) => {
@@ -140,25 +104,124 @@ class Converter extends EventEmitter {
       });
 
       ffmpeg.on('close', (code) => {
-        if (code !== 0) {
-          const error = new Error(`ffmpeg process exited with code ${code}`);
+        if (code === 0) {
+          const result: ConversionResult = {
+            inputFile: this.inputFile,
+            outputFile: this.outputFile,
+            options: this.options,
+            duration: duration,
+            success: true
+          };
+          this.emit('end', result);
+          resolve(result);
+        } else {
+          const error = new Error(`FFmpeg exited with code ${code}`);
           this.emit('error', error);
           reject(error);
-          return;
         }
-
-        const result: ConversionResult = {
-          inputFile: this.inputFile,
-          outputFile: this.outputFile,
-          options: this.options,
-          duration: (Date.now() - startTime) / 1000,
-          success: true
-        };
-
-        this.emit('end', result);
-        resolve(result);
       });
     });
+  }
+
+  // Build FFmpeg arguments based on options
+  private buildFfmpegArgs(): string[] {
+    const args = ['-y', '-i', this.inputFile];
+
+    // Add codec if specified
+    if (this.options.codec) {
+      args.push('-c:v', this.options.codec);
+    }
+
+    // Add pixel format if specified
+    if (this.options.pixFmt) {
+      args.push('-pix_fmt', this.options.pixFmt);
+    }
+
+    // Add preset if specified
+    if (this.options.preset) {
+      args.push('-preset', this.options.preset);
+    }
+
+    // Add width and height if specified
+    if (this.options.width && this.options.height) {
+      args.push('-s', `${this.options.width}x${this.options.height}`);
+    }
+
+    // Add bitrate if specified
+    if (this.options.bitrate) {
+      args.push('-b:v', this.options.bitrate);
+    }
+
+    // Add quality if specified (for image conversion)
+    if (this.options.quality) {
+      args.push('-q:v', this.options.quality.toString());
+    }
+    
+    // Handle rav1e-specific options
+    if (this.options.codec === 'librav1e') {
+      // Build rav1e params string
+      const rav1eParams: string[] = [];
+      
+      // Add speed parameter
+      if (this.options.speed !== undefined) {
+        rav1eParams.push(`speed=${this.options.speed}`);
+      }
+      
+      // Add tile configuration
+      if (this.options.tileColumns !== undefined) {
+        rav1eParams.push(`tile-cols=${this.options.tileColumns}`);
+      }
+      
+      if (this.options.tileRows !== undefined) {
+        rav1eParams.push(`tile-rows=${this.options.tileRows}`);
+      }
+      
+      // Add threads parameter for multi-threading
+      if (this.options.threads !== undefined) {
+        rav1eParams.push(`threads=${this.options.threads}`);
+      } else {
+        // Default to using all available CPU cores
+        const cpuCount = os.cpus().length;
+        rav1eParams.push(`threads=${cpuCount}`);
+      }
+      
+      // Add keyframe interval
+      if (this.options.keyframeInterval !== undefined) {
+        args.push('-g', this.options.keyframeInterval.toString());
+      }
+      
+      // Add rav1e params if any were specified
+      if (rav1eParams.length > 0) {
+        args.push('-rav1e-params', rav1eParams.join(':'));
+      }
+      
+      // Enable row multi-threading for additional parallelism
+      args.push('-row-mt', '1');
+    }
+
+    // Add any extra options
+    if (this.options.extraOptions) {
+      args.push(...this.options.extraOptions);
+    }
+
+    // Add output file
+    args.push(this.outputFile);
+
+    return args;
+  }
+
+  // Parse ffmpeg progress output
+  private parseProgress(data: string): ProgressData {
+    const frame = data.match(/frame=\s*(\d+)/)?.[1] || '0';
+    const fps = data.match(/fps=\s*(\d+)/)?.[1] || '0';
+    const time = data.match(/time=\s*(\d{2}:\d{2}:\d{2}\.\d{2})/)?.[1] || '00:00:00.00';
+  
+    return {
+      percent: 0, // Will be calculated when duration is known
+      frame: parseInt(frame),
+      fps: parseInt(fps),
+      time
+    };
   }
 }
 
@@ -170,20 +233,6 @@ const checkFfmpegInstalled = (): boolean => {
   } catch (error) {
     return false;
   }
-};
-
-// Parse ffmpeg progress output
-const parseProgress = (data: string): ProgressData => {
-  const frame = data.match(/frame=\s*(\d+)/)?.[1] || '0';
-  const fps = data.match(/fps=\s*(\d+)/)?.[1] || '0';
-  const time = data.match(/time=\s*(\d{2}:\d{2}:\d{2}\.\d{2})/)?.[1] || '00:00:00.00';
-  
-  return {
-    percent: 0, // Will be calculated when duration is known
-    frame: parseInt(frame),
-    fps: parseInt(fps),
-    time
-  };
 };
 
 // Promise-based API implementation

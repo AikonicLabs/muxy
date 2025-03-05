@@ -2,13 +2,19 @@
   "name": "@aikonlabs/muxy",
   "version": "0.1.0",
   "type": "module",
+  "description": "Media conversion library with advanced codec support including rav1e for AV1",
   "scripts": {
     "build": "unbuild",
     "prepack": "unbuild",
     "dev": "unbuild --watch",
     "test:ffmpeg": "node scripts/test-ffmpeg.js",
-    "container:test": "node example/container-test.js",
+    "test:rav1e": "node scripts/check-rav1e.js",
+    "test:ffmpeg-rav1e": "node scripts/check-ffmpeg-rav1e.js",
+    "container:test": "node scripts/container-test.js",
+    "generate:test-video": "node scripts/generate-test-video.js",
     "example": "node example/index.js",
+    "example:av1": "node --loader ts-node/esm example/av1.ts",
+    "benchmark:av1": "node --loader ts-node/esm example/av1-benchmark.ts",
     "setup:devpod": "bash scripts/setup-devpod.sh"
   },
   "exports": {
@@ -22,8 +28,22 @@
   "files": [
     "dist"
   ],
+  "keywords": [
+    "ffmpeg",
+    "media",
+    "conversion",
+    "video",
+    "image",
+    "av1",
+    "rav1e",
+    "codec"
+  ],
+  "author": "AikonLabs",
+  "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.13.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3",
     "unbuild": "^3.5.0"
   }
 }
